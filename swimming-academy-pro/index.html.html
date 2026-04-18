@@ -1,0 +1,1204 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swimming Academy Pro</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Tahoma,sans-serif;background:#060b18;color:#f1f5f9;direction:rtl}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:#0a1128}
+::-webkit-scrollbar-thumb{background:#1e3a5f;border-radius:4px}
+select,input,textarea,button{direction:rtl;font-family:inherit}
+a{color:inherit;text-decoration:none}
+@keyframes slideDown{from{opacity:0;transform:translate(-50%,-20px)}to{opacity:1;transform:translate(-50%,0)}}
+@keyframes fadeIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+@keyframes ripple{0%{transform:scale(0.8);opacity:1}100%{transform:scale(2.5);opacity:0}}
+@keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback,useMemo,useRef}=React;
+
+// ═══════════════════════════════════════════
+// SUPABASE CONFIG — ضع بيانات مشروعك هنا
+// ═══════════════════════════════════════════
+const SUPABASE_URL="https://fzqxtyowpqnxkwzeeahv.supabase.co";
+const SUPABASE_ANON_KEY="sb_publishable_cU69Lgy9TS_7Cou03dMV7A_8HKgPWHz";
+const supabase=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+const AUTH_STORE_KEY="swim_academy_auth";
+
+// ═══════════════════════════════════════════
+// LICENSE GATE — Auth Guard Component
+// ═══════════════════════════════════════════
+const LicenseGate=({children})=>{
+  const [authState,setAuthState]=useState("loading"); // loading | login | activated
+  const [email,setEmail]=useState("");
+  const [licenseKey,setLicenseKey]=useState("");
+  const [error,setError]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [userEmail,setUserEmail]=useState("");
+  const [licenseInfo,setLicenseInfo]=useState(null);
+
+  // ── Check saved auth on mount ──
+  useEffect(()=>{
+    const checkAuth=async()=>{
+      try{
+        const saved=localStorage.getItem(AUTH_STORE_KEY);
+        if(!saved){setAuthState("login");return}
+        const{email:savedEmail}=JSON.parse(saved);
+        if(!savedEmail){setAuthState("login");return}
+
+        // Verify against Supabase
+        const{data,error:err}=await supabase
+          .from("licenses")
+          .select("*")
+          .eq("email",savedEmail)
+          .eq("status","activated")
+          .single();
+
+        if(err||!data){
+          localStorage.removeItem(AUTH_STORE_KEY);
+          setAuthState("login");
+          return;
+        }
+
+        // Check expiry
+        if(new Date(data.expiry_date)<new Date()){
+          localStorage.removeItem(AUTH_STORE_KEY);
+          setError("انتهت صلاحية الترخيص. يرجى التواصل مع الإدارة للتجديد.");
+          setAuthState("login");
+          return;
+        }
+
+        setUserEmail(savedEmail);
+        setLicenseInfo(data);
+        setAuthState("activated");
+      }catch(e){
+        console.error("Auth check failed:",e);
+        // If Supabase is not configured yet, allow offline access with saved auth
+        const saved=localStorage.getItem(AUTH_STORE_KEY);
+        if(saved){
+          try{
+            const{email:savedEmail}=JSON.parse(saved);
+            if(savedEmail){setUserEmail(savedEmail);setAuthState("activated");return}
+          }catch(e2){}
+        }
+        setAuthState("login");
+      }
+    };
+    checkAuth();
+  },[]);
+
+  // ── Activate License ──
+  const handleActivate=async()=>{
+    setError("");
+    if(!email.trim()||!licenseKey.trim()){setError("يرجى إدخال البريد الإلكتروني وكود التفعيل");return}
+
+    setLoading(true);
+    try{
+      // Find license by key
+      const{data:license,error:findErr}=await supabase
+        .from("licenses")
+        .select("*")
+        .eq("license_key",licenseKey.trim())
+        .single();
+
+      if(findErr||!license){
+        setError("كود التفعيل غير صحيح. تأكد من الكود وحاول مرة أخرى.");
+        setLoading(false);return;
+      }
+
+      // Check if already activated by different email
+      if(license.status==="activated"&&license.email&&license.email!==email.trim()){
+        setError("هذا الكود مُفعّل مسبقاً على بريد إلكتروني آخر.");
+        setLoading(false);return;
+      }
+
+      // Check expiry
+      if(new Date(license.expiry_date)<new Date()){
+        setError("كود التفعيل منتهي الصلاحية. يرجى التواصل مع الإدارة.");
+        setLoading(false);return;
+      }
+
+      // If already activated with same email, just log in
+      if(license.status==="activated"&&license.email===email.trim()){
+        localStorage.setItem(AUTH_STORE_KEY,JSON.stringify({email:email.trim()}));
+        setUserEmail(email.trim());
+        setLicenseInfo(license);
+        setAuthState("activated");
+        setLoading(false);return;
+      }
+
+      // Activate: update status and bind email
+      const{error:updateErr}=await supabase
+        .from("licenses")
+        .update({status:"activated",email:email.trim()})
+        .eq("license_key",licenseKey.trim());
+
+      if(updateErr){
+        setError("حدث خطأ أثناء التفعيل. حاول مرة أخرى.");
+        setLoading(false);return;
+      }
+
+      // Save to localStorage
+      localStorage.setItem(AUTH_STORE_KEY,JSON.stringify({email:email.trim()}));
+      setUserEmail(email.trim());
+      setLicenseInfo({...license,status:"activated",email:email.trim()});
+      setAuthState("activated");
+    }catch(e){
+      console.error("Activation error:",e);
+      setError("خطأ في الاتصال. تأكد من اتصال الإنترنت وإعدادات Supabase.");
+    }
+    setLoading(false);
+  };
+
+  // ── Logout ──
+  const handleLogout=()=>{
+    localStorage.removeItem(AUTH_STORE_KEY);
+    setAuthState("login");
+    setUserEmail("");
+    setLicenseInfo(null);
+    setEmail("");
+    setLicenseKey("");
+    setError("");
+  };
+
+  // ── Loading Screen ──
+  if(authState==="loading"){
+    return(
+      <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#060b18",flexDirection:"column",gap:16}}>
+        <div style={{width:50,height:50,borderRadius:14,background:"linear-gradient(135deg,#0ea5e9,#0284c7)",display:"flex",alignItems:"center",justifyContent:"center",animation:"float 2s ease-in-out infinite"}}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 20c1.5-1 3-2 5-2s3.5 1 5 2 3 2 5 2 3.5-1 5-2M2 16c1.5-1 3-2 5-2s3.5 1 5 2 3 2 5 2 3.5-1 5-2M12 3a4 4 0 014 4c0 2-2 4-4 6-2-2-4-4-4-6a4 4 0 014-4z"/></svg>
+        </div>
+        <div style={{color:"#94a3b8",fontSize:14}}>جارٍ التحقق من الترخيص...</div>
+      </div>
+    );
+  }
+
+  // ── Login/Activation Screen ──
+  if(authState==="login"){
+    return(
+      <div dir="rtl" style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#060b18",fontFamily:"'Segoe UI',Tahoma,sans-serif",padding:20,position:"relative",overflow:"hidden"}}>
+        {/* Background decorations */}
+        <div style={{position:"absolute",top:"10%",right:"5%",width:300,height:300,borderRadius:"50%",background:"radial-gradient(circle,rgba(14,165,233,0.06) 0%,transparent 70%)"}}/>
+        <div style={{position:"absolute",bottom:"10%",left:"5%",width:250,height:250,borderRadius:"50%",background:"radial-gradient(circle,rgba(16,185,129,0.05) 0%,transparent 70%)"}}/>
+
+        <div style={{background:"#0c1529",borderRadius:24,padding:"40px 36px",width:"100%",maxWidth:440,border:"1px solid #152040",boxShadow:"0 30px 80px rgba(0,0,0,.5)",position:"relative",animation:"fadeIn .4s ease"}}>
+          {/* Logo */}
+          <div style={{textAlign:"center",marginBottom:32}}>
+            <div style={{width:64,height:64,borderRadius:18,background:"linear-gradient(135deg,#0ea5e9,#0284c7)",display:"inline-flex",alignItems:"center",justifyContent:"center",marginBottom:16,boxShadow:"0 8px 30px rgba(14,165,233,0.3)"}}>
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 20c1.5-1 3-2 5-2s3.5 1 5 2 3 2 5 2 3.5-1 5-2M2 16c1.5-1 3-2 5-2s3.5 1 5 2 3 2 5 2 3.5-1 5-2M12 3a4 4 0 014 4c0 2-2 4-4 6-2-2-4-4-4-6a4 4 0 014-4z"/></svg>
+            </div>
+            <h1 style={{color:"#f1f5f9",fontSize:22,fontWeight:800,margin:"0 0 6px"}}>Swimming Academy Pro</h1>
+            <p style={{color:"#4a5e7a",fontSize:13,margin:0}}>أدخل بيانات التفعيل للوصول إلى النظام</p>
+          </div>
+
+          {/* Form */}
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+            <div style={{display:"flex",flexDirection:"column",gap:5}}>
+              <label style={{fontSize:12,color:"#94a3b8",fontWeight:700}}>البريد الإلكتروني</label>
+              <div style={{position:"relative"}}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4a5e7a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{position:"absolute",right:12,top:12}}><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/></svg>
+                <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="example@email.com" dir="ltr" style={{width:"100%",padding:"12px 40px 12px 14px",borderRadius:12,border:"1px solid #152040",background:"#091020",color:"#f1f5f9",fontSize:14,fontFamily:"inherit",outline:"none",boxSizing:"border-box",textAlign:"left",transition:"border .2s"}} onFocus={e=>e.target.style.borderColor="#0ea5e9"} onBlur={e=>e.target.style.borderColor="#152040"}/>
+              </div>
+            </div>
+
+            <div style={{display:"flex",flexDirection:"column",gap:5}}>
+              <label style={{fontSize:12,color:"#94a3b8",fontWeight:700}}>كود التفعيل</label>
+              <div style={{position:"relative"}}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4a5e7a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{position:"absolute",right:12,top:12}}><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                <input value={licenseKey} onChange={e=>setLicenseKey(e.target.value)} placeholder="XXXX-XXXX-XXXX-XXXX" dir="ltr" style={{width:"100%",padding:"12px 40px 12px 14px",borderRadius:12,border:"1px solid #152040",background:"#091020",color:"#f1f5f9",fontSize:14,fontFamily:"'Courier New',monospace",outline:"none",boxSizing:"border-box",textAlign:"left",letterSpacing:1.5,transition:"border .2s"}} onFocus={e=>e.target.style.borderColor="#0ea5e9"} onBlur={e=>e.target.style.borderColor="#152040"} onKeyDown={e=>{if(e.key==="Enter")handleActivate()}}/>
+              </div>
+            </div>
+
+            {error&&(
+              <div style={{background:"#ef444415",border:"1px solid #ef444433",borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",gap:8}}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+                <span style={{color:"#ef4444",fontSize:13,flex:1}}>{error}</span>
+              </div>
+            )}
+
+            <button onClick={handleActivate} disabled={loading} style={{padding:"14px",borderRadius:12,border:"none",background:loading?"#0ea5e966":"linear-gradient(135deg,#0ea5e9,#0284c7)",color:"#fff",fontWeight:700,fontSize:15,cursor:loading?"wait":"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:4,boxShadow:"0 4px 20px rgba(14,165,233,0.3)",transition:"all .2s"}}>
+              {loading?(
+                <span style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{width:18,height:18,border:"2px solid #ffffff44",borderTopColor:"#fff",borderRadius:"50%",display:"inline-block",animation:"pulse 1s infinite"}}/>
+                  جارٍ التحقق...
+                </span>
+              ):(
+                <span style={{display:"flex",alignItems:"center",gap:8}}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                  تفعيل الترخيص
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* Footer */}
+          <div style={{textAlign:"center",marginTop:24,paddingTop:18,borderTop:"1px solid #152040"}}>
+            <p style={{color:"#4a5e7a",fontSize:11,margin:0}}>للحصول على كود التفعيل، تواصل مع إدارة الأكاديمية</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Activated: Render App ──
+  return React.Children.map(children,child=>
+    React.cloneElement(child,{onLogout:handleLogout,userEmail,licenseInfo})
+  );
+};
+
+const STORE_KEY="swim_academy_pro_v5";
+
+const defaultSettings={
+  facilityName:"أكاديمية السباحة الاحترافية",
+  classes:[
+    {id:1,name:"كلاس الصباح",hours:["06:00","07:00","08:00","09:00"]},
+    {id:2,name:"كلاس الظهر",hours:["12:00","13:00","14:00"]},
+    {id:3,name:"كلاس المساء",hours:["16:00","17:00","18:00","19:00","20:00"]},
+  ],
+  subTypes:["يومي","شهري","ربع سنوي","نصف سنوي","سنوي"],
+  levels:["مبتدئ","متوسط","متقدم"],
+};
+
+const defaultPlayers=[
+  {id:1,name:"أحمد محمد",phone:"0501234567",age:12,level:"متوسط",classId:1,sessionHour:"07:00",photo:null,active:true,notes:"",totalSessions:12,usedSessions:8,subscription:{type:"شهري",startDate:"2026-03-01",endDate:"2026-04-01",amount:300,paid:true},fees:[{id:1,desc:"ملابس سباحة",amount:150,paid:true,date:"2026-03-05"}],attendance:[{date:"2026-04-14",status:"حاضر"},{date:"2026-04-15",status:"حاضر"},{date:"2026-04-16",status:"غائب"},{date:"2026-04-17",status:"حاضر"},{date:"2026-04-18",status:"حاضر"}]},
+  {id:2,name:"خالد عبدالله",phone:"0559876543",age:10,level:"مبتدئ",classId:3,sessionHour:"17:00",photo:null,active:true,notes:"يحتاج تدريب إضافي",totalSessions:12,usedSessions:10,subscription:{type:"شهري",startDate:"2026-03-15",endDate:"2026-04-15",amount:300,paid:true},fees:[{id:1,desc:"مسابقة داخلية",amount:50,paid:false,date:"2026-04-01"}],attendance:[{date:"2026-04-14",status:"حاضر"},{date:"2026-04-15",status:"غائب"},{date:"2026-04-16",status:"حاضر"},{date:"2026-04-17",status:"حاضر"},{date:"2026-04-18",status:"حاضر"}]},
+  {id:3,name:"عمر سعد",phone:"0512345678",age:14,level:"متقدم",classId:1,sessionHour:"08:00",photo:null,active:true,notes:"",totalSessions:24,usedSessions:20,subscription:{type:"ربع سنوي",startDate:"2026-01-10",endDate:"2026-04-10",amount:800,paid:true},fees:[],attendance:[{date:"2026-04-14",status:"حاضر"},{date:"2026-04-15",status:"حاضر"},{date:"2026-04-16",status:"حاضر"},{date:"2026-04-17",status:"متأخر"},{date:"2026-04-18",status:"غائب"}]},
+  {id:4,name:"فيصل ناصر",phone:"0567891234",age:8,level:"مبتدئ",classId:2,sessionHour:"13:00",photo:null,active:false,notes:"متوقف مؤقتاً",totalSessions:12,usedSessions:12,subscription:{type:"شهري",startDate:"2026-02-01",endDate:"2026-03-01",amount:300,paid:true},fees:[{id:1,desc:"تأمين",amount:100,paid:true,date:"2026-02-01"}],attendance:[]},
+  {id:5,name:"سلطان فهد",phone:"0534567890",age:11,level:"متوسط",classId:3,sessionHour:"18:00",photo:null,active:true,notes:"",totalSessions:12,usedSessions:5,subscription:{type:"شهري",startDate:"2026-03-20",endDate:"2026-04-20",amount:300,paid:false},fees:[{id:1,desc:"ملابس سباحة",amount:150,paid:false,date:"2026-04-01"}],attendance:[{date:"2026-04-14",status:"غائب"},{date:"2026-04-15",status:"حاضر"},{date:"2026-04-16",status:"حاضر"},{date:"2026-04-17",status:"حاضر"},{date:"2026-04-18",status:"حاضر"}]},
+  {id:6,name:"ياسر حمد",phone:"0543216789",age:13,level:"متقدم",classId:1,sessionHour:"06:00",photo:null,active:true,notes:"مرشح للمسابقات",totalSessions:48,usedSessions:30,subscription:{type:"نصف سنوي",startDate:"2026-01-01",endDate:"2026-07-01",amount:1500,paid:true},fees:[{id:1,desc:"مسابقة خارجية",amount:200,paid:true,date:"2026-03-15"}],attendance:[{date:"2026-04-14",status:"حاضر"},{date:"2026-04-15",status:"حاضر"},{date:"2026-04-16",status:"حاضر"},{date:"2026-04-17",status:"حاضر"},{date:"2026-04-18",status:"حاضر"}]},
+];
+
+const load=()=>{try{const d=localStorage.getItem(STORE_KEY);return d?JSON.parse(d):{settings:defaultSettings,players:defaultPlayers}}catch(e){return{settings:defaultSettings,players:defaultPlayers}}};
+const save=(d)=>{try{localStorage.setItem(STORE_KEY,JSON.stringify(d))}catch(e){}};
+
+const today=()=>new Date().toISOString().split("T")[0];
+const daysLeft=(end)=>Math.ceil((new Date(end)-new Date())/86400000);
+
+const TABS=["الرئيسية","اللاعبون","الحضور","الاشتراكات","الرسوم","التقارير","الإعدادات"];
+const ATT_STATUS=["حاضر","غائب","متأخر","إجازة"];
+
+const P={
+  bg:"#060b18",card:"#0c1529",border:"#152040",accent:"#0ea5e9",accentDk:"#0284c7",
+  success:"#10b981",warn:"#f59e0b",danger:"#ef4444",
+  text:"#f1f5f9",dim:"#94a3b8",muted:"#4a5e7a",surface:"#091020",
+  glass:"rgba(12,21,41,0.85)",
+};
+
+const IC={
+  home:"M3 12l9-9 9 9M5 10v10a1 1 0 001 1h3a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1h3a1 1 0 001-1V10",
+  users:"M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75",
+  cal:"M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z",
+  card:"M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z",
+  dollar:"M12 1v22m5-18H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H7",
+  chart:"M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z",
+  gear:"M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z",
+  search:"M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z",
+  plus:"M12 4v16m8-8H4",
+  x:"M6 18L18 6M6 6l12 12",
+  phone:"M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z",
+  wa:"M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z",
+  edit:"M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z",
+  trash:"M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16",
+  bell:"M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9",
+  swim:"M2 20c1.5-1 3-2 5-2s3.5 1 5 2 3 2 5 2 3.5-1 5-2M2 16c1.5-1 3-2 5-2s3.5 1 5 2 3 2 5 2 3.5-1 5-2M12 3a4 4 0 014 4c0 2-2 4-4 6-2-2-4-4-4-6a4 4 0 014-4z",
+  refresh:"M4 4v5h5M20 20v-5h-5M4.5 16A8 8 0 0120 11.5M19.5 8A8 8 0 004 12.5",
+  camera:"M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2zM12 17a4 4 0 100-8 4 4 0 000 8z",
+  clock:"M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM12 6v6l4 2",
+  send:"M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z",
+};
+
+const Icon=({d,size=20,color=P.dim,style:s})=>(
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0,...s}}><path d={d}/></svg>
+);
+
+const Badge=({children,color=P.accent})=>(
+  <span style={{background:color+"1a",color,padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,whiteSpace:"nowrap",border:`1px solid ${color}33`}}>{children}</span>
+);
+
+const Btn=({children,onClick,color=P.accent,variant="filled",small,disabled,style:s,...rest})=>{
+  const bg=variant==="filled"?color:"transparent";
+  const bd=variant==="outlined"?`1.5px solid ${color}`:"none";
+  const tc=variant==="filled"?"#fff":color;
+  return <button style={{padding:small?"6px 12px":"10px 20px",borderRadius:10,border:bd,background:bg,color:tc,fontWeight:600,fontSize:small?12:14,cursor:disabled?"not-allowed":"pointer",opacity:disabled?.5:1,transition:"all .15s",fontFamily:"inherit",display:"inline-flex",alignItems:"center",gap:5,whiteSpace:"nowrap",...s}} onClick={disabled?undefined:onClick} {...rest}>{children}</button>;
+};
+
+const Inp=({label,value,onChange,type="text",options,placeholder,textarea,style:s,children,...rest})=>(
+  <div style={{display:"flex",flexDirection:"column",gap:4,...s}}>
+    {label&&<label style={{fontSize:11,color:P.dim,fontWeight:700,letterSpacing:.3}}>{label}</label>}
+    {options?(
+      <select value={value} onChange={e=>onChange(e.target.value)} style={{padding:"9px 12px",borderRadius:8,border:`1px solid ${P.border}`,background:P.surface,color:P.text,fontSize:13,fontFamily:"inherit",outline:"none"}} {...rest}>
+        {options.map(o=><option key={typeof o==="object"?o.value:o} value={typeof o==="object"?o.value:o}>{typeof o==="object"?o.label:o}</option>)}
+      </select>
+    ):textarea?(
+      <textarea value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} rows={3} style={{padding:"9px 12px",borderRadius:8,border:`1px solid ${P.border}`,background:P.surface,color:P.text,fontSize:13,fontFamily:"inherit",outline:"none",resize:"vertical"}} {...rest}/>
+    ):(
+      <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} style={{padding:"9px 12px",borderRadius:8,border:`1px solid ${P.border}`,background:P.surface,color:P.text,fontSize:13,fontFamily:"inherit",outline:"none"}} {...rest}/>
+    )}
+    {children}
+  </div>
+);
+
+const StatCard=({icon,label,value,sub,color=P.accent})=>(
+  <div style={{background:P.card,borderRadius:16,padding:"18px 20px",border:`1px solid ${P.border}`,flex:"1 1 180px",minWidth:160,position:"relative",overflow:"hidden"}}>
+    <div style={{position:"absolute",top:-25,left:-25,width:90,height:90,borderRadius:"50%",background:color+"0a"}}/>
+    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,position:"relative"}}>
+      <div style={{width:38,height:38,borderRadius:11,background:color+"15",display:"flex",alignItems:"center",justifyContent:"center",border:`1px solid ${color}22`}}>
+        <Icon d={icon} color={color} size={20}/>
+      </div>
+      <span style={{fontSize:12,color:P.dim,fontWeight:600}}>{label}</span>
+    </div>
+    <div style={{fontSize:28,fontWeight:800,color:P.text,lineHeight:1,position:"relative"}}>{value}</div>
+    {sub&&<div style={{fontSize:11,color:P.muted,marginTop:5}}>{sub}</div>}
+  </div>
+);
+
+const Modal=({open,onClose,title,children,wide})=>{
+  if(!open)return null;
+  return(
+    <div style={{position:"fixed",inset:0,zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.75)",backdropFilter:"blur(6px)"}} onClick={onClose}>
+      <div style={{background:P.card,borderRadius:20,padding:24,width:wide?"94%":"92%",maxWidth:wide?860:540,maxHeight:"88vh",overflow:"auto",border:`1px solid ${P.border}`,boxShadow:"0 30px 60px rgba(0,0,0,.5)",animation:"fadeIn .2s ease"}} onClick={e=>e.stopPropagation()}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18,paddingBottom:14,borderBottom:`1px solid ${P.border}`}}>
+          <h3 style={{color:P.text,fontSize:18,fontWeight:800,margin:0}}>{title}</h3>
+          <button onClick={onClose} style={{background:P.surface,border:`1px solid ${P.border}`,cursor:"pointer",padding:6,borderRadius:8,display:"flex"}}><Icon d={IC.x} color={P.dim} size={18}/></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+};
+
+const waLink=(phone,msg)=>{
+  const clean=phone.replace(/^0/,"966");
+  return`https://wa.me/${clean}?text=${encodeURIComponent(msg)}`;
+};
+
+const WaBtn=({phone,msg,label,small=true})=>(
+  <a href={waLink(phone,msg)} target="_blank" rel="noreferrer" style={{textDecoration:"none"}}>
+    <Btn small={small} color="#25d366"><Icon d={IC.wa} size={14} color="#fff"/> {label||"واتساب"}</Btn>
+  </a>
+);
+
+// ── Photo handler (stateless, outside App) ──
+const handlePhoto=(file,cb)=>{
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=e=>cb(e.target.result);
+  reader.readAsDataURL(file);
+};
+
+// ── Player Form (defined OUTSIDE App to prevent re-creation on every render) ──
+const PlayerForm=({player,setPlayer,onSave,isEdit,settings,getClassHours})=>{
+  const classHours=getClassHours(player.classId);
+  const localFileRef=useRef(null);
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      {/* Photo */}
+      <div style={{display:"flex",alignItems:"center",gap:16}}>
+        <div onClick={()=>localFileRef.current?.click()} style={{width:80,height:80,borderRadius:18,background:P.surface,border:`2px dashed ${P.border}`,display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",overflow:"hidden",flexShrink:0,transition:"border .2s"}}>
+          {player.photo?<img src={player.photo} style={{width:"100%",height:"100%",objectFit:"cover"}}/>:<div style={{textAlign:"center"}}><Icon d={IC.camera} color={P.muted} size={24}/><div style={{fontSize:10,color:P.muted,marginTop:4}}>صورة</div></div>}
+        </div>
+        <input ref={localFileRef} type="file" accept="image/*" style={{display:"none"}} onChange={e=>handlePhoto(e.target.files[0],url=>setPlayer(p=>({...p,photo:url})))}/>
+        <div style={{flex:1}}>
+          <Inp label="الاسم الكامل" value={player.name} onChange={v=>setPlayer(p=>({...p,name:v}))} placeholder="اسم اللاعب"/>
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        <Inp label="رقم الجوال" value={player.phone} onChange={v=>setPlayer(p=>({...p,phone:v}))} placeholder="05xxxxxxxx"/>
+        <Inp label="العمر" type="number" value={player.age} onChange={v=>setPlayer(p=>({...p,age:v}))}/>
+        <Inp label="المستوى" value={player.level} onChange={v=>setPlayer(p=>({...p,level:v}))} options={settings.levels}/>
+        <Inp label="الكلاس" value={player.classId} onChange={v=>setPlayer(p=>({...p,classId:Number(v),sessionHour:""}))} options={settings.classes.map(c=>({value:c.id,label:c.name}))}/>
+        <Inp label="ساعة التمرين" value={player.sessionHour} onChange={v=>setPlayer(p=>({...p,sessionHour:v}))} options={["",  ...classHours].map(h=>({value:h,label:h||"اختر الساعة"}))}/>
+        <Inp label="عدد التمارين" type="number" value={player.totalSessions} onChange={v=>setPlayer(p=>({...p,totalSessions:Number(v)}))} placeholder="12"/>
+        <Inp label="نوع الاشتراك" value={player.subscription.type} onChange={v=>setPlayer(p=>({...p,subscription:{...p.subscription,type:v}}))} options={settings.subTypes}/>
+        <Inp label="مبلغ الاشتراك" type="number" value={player.subscription.amount} onChange={v=>setPlayer(p=>({...p,subscription:{...p.subscription,amount:Number(v)}}))}/>
+        <Inp label="تاريخ البدء" type="date" value={player.subscription.startDate} onChange={v=>setPlayer(p=>({...p,subscription:{...p.subscription,startDate:v}}))}/>
+        {isEdit&&<Inp label="التمارين المستخدمة" type="number" value={player.usedSessions} onChange={v=>setPlayer(p=>({...p,usedSessions:Number(v)}))}/>}
+      </div>
+      <Inp label="ملاحظات" value={player.notes} onChange={v=>setPlayer(p=>({...p,notes:v}))} textarea placeholder="ملاحظات..."/>
+      <Btn onClick={onSave} style={{justifyContent:"center"}}>{isEdit?"حفظ التعديلات":"حفظ اللاعب"}</Btn>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════
+function App({onLogout,userEmail,licenseInfo}){
+  const [store,setStore]=useState(load);
+  const [tab,setTab]=useState(0);
+  const [search,setSearch]=useState("");
+  const [filterClass,setFilterClass]=useState("الكل");
+  const [filterLevel,setFilterLevel]=useState("الكل");
+  const [selPlayer,setSelPlayer]=useState(null);
+  const [showAddPlayer,setShowAddPlayer]=useState(false);
+  const [editPlayer,setEditPlayer]=useState(null);
+  const [showAddFee,setShowAddFee]=useState(null);
+  const [newFee,setNewFee]=useState({desc:"",amount:"",paid:false,date:today()});
+  const [attDate,setAttDate]=useState(today());
+  const [toast,setToast]=useState(null);
+
+  const settings=store.settings;
+  const players=store.players;
+
+  useEffect(()=>{save(store)},[store]);
+
+  const tt=useCallback((msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast(null),3000)},[]);
+
+  const updateSettings=useCallback(u=>{setStore(s=>({...s,settings:{...s.settings,...u}}))},[]);
+  const updatePlayer=useCallback((id,u)=>{setStore(s=>({...s,players:s.players.map(p=>p.id===id?{...p,...u}:p)}))},[]);
+  const deletePlayer=useCallback(id=>{setStore(s=>({...s,players:s.players.filter(p=>p.id!==id)}));setSelPlayer(null);tt("تم حذف اللاعب")},[tt]);
+
+  const activePlayers=useMemo(()=>players.filter(p=>p.active),[players]);
+  const getClassName=useCallback(cid=>{const c=settings.classes.find(x=>x.id===cid);return c?c.name:"—"},[settings.classes]);
+  const getClassHours=useCallback(cid=>{const c=settings.classes.find(x=>x.id===cid);return c?c.hours:[]},[settings.classes]);
+
+  const filtered=useMemo(()=>players.filter(p=>{
+    if(search&&!p.name.includes(search)&&!p.phone.includes(search))return false;
+    if(filterClass!=="الكل"&&p.classId!==Number(filterClass))return false;
+    if(filterLevel!=="الكل"&&p.level!==filterLevel)return false;
+    return true;
+  }),[players,search,filterClass,filterLevel]);
+
+  const stats=useMemo(()=>{
+    const expSoon=activePlayers.filter(p=>{const d=daysLeft(p.subscription.endDate);return d>=0&&d<=7});
+    const expired=activePlayers.filter(p=>daysLeft(p.subscription.endDate)<0);
+    const totalRev=players.reduce((s,p)=>s+(p.subscription.paid?p.subscription.amount:0)+p.fees.filter(f=>f.paid).reduce((a,f)=>a+f.amount,0),0);
+    const pendRev=players.reduce((s,p)=>s+(!p.subscription.paid?p.subscription.amount:0)+p.fees.filter(f=>!f.paid).reduce((a,f)=>a+f.amount,0),0);
+    const classDist=settings.classes.map(c=>({name:c.name,id:c.id,count:activePlayers.filter(p=>p.classId===c.id).length}));
+    const lowSessions=activePlayers.filter(p=>p.totalSessions-p.usedSessions<=2&&p.totalSessions-p.usedSessions>=0);
+    return{expSoon,expired,totalRev,pendRev,classDist,lowSessions};
+  },[players,activePlayers,settings.classes]);
+
+  // ── Add Player ──
+  const emptyPlayer={name:"",phone:"",age:"",level:settings.levels[0],classId:settings.classes[0]?.id||1,sessionHour:"",photo:null,active:true,notes:"",totalSessions:12,usedSessions:0,subscription:{type:settings.subTypes[1]||"شهري",startDate:today(),endDate:"",amount:300,paid:false},fees:[],attendance:[]};
+  const [np,setNp]=useState({...emptyPlayer});
+
+  const doAddPlayer=()=>{
+    if(!np.name.trim()){tt("يرجى إدخال اسم اللاعب","danger");return}
+    const end=new Date(np.subscription.startDate);
+    const m={"يومي":0,"شهري":1,"ربع سنوي":3,"نصف سنوي":6,"سنوي":12};
+    const addMonths=m[np.subscription.type];
+    if(addMonths===0){end.setDate(end.getDate()+1)}else{end.setMonth(end.getMonth()+(addMonths||1))}
+    const player={...np,id:Date.now(),subscription:{...np.subscription,endDate:end.toISOString().split("T")[0]}};
+    setStore(s=>({...s,players:[...s.players,player]}));
+    setNp({...emptyPlayer});
+    setShowAddPlayer(false);
+    tt("تمت إضافة اللاعب بنجاح ✓");
+  };
+
+  // ── Edit Player ──
+  const [ep,setEp]=useState(null);
+  const openEdit=(p)=>{setEp({...p,subscription:{...p.subscription}});setEditPlayer(p.id)};
+  const doEditPlayer=()=>{
+    if(!ep.name.trim()){tt("يرجى إدخال اسم اللاعب","danger");return}
+    const end=new Date(ep.subscription.startDate);
+    const m={"يومي":0,"شهري":1,"ربع سنوي":3,"نصف سنوي":6,"سنوي":12};
+    const addMonths=m[ep.subscription.type];
+    if(addMonths===0){end.setDate(end.getDate()+1)}else{end.setMonth(end.getMonth()+(addMonths||1))}
+    updatePlayer(ep.id,{...ep,subscription:{...ep.subscription,endDate:end.toISOString().split("T")[0]}});
+    setEditPlayer(null);setEp(null);
+    tt("تم تحديث بيانات اللاعب ✓");
+  };
+
+  // ── Subscription ──
+  const renewSub=(pid)=>{
+    const p=players.find(x=>x.id===pid);if(!p)return;
+    const start=today();const end=new Date(start);
+    const m={"يومي":0,"شهري":1,"ربع سنوي":3,"نصف سنوي":6,"سنوي":12};
+    const addM=m[p.subscription.type];
+    if(addM===0){end.setDate(end.getDate()+1)}else{end.setMonth(end.getMonth()+(addM||1))}
+    updatePlayer(pid,{subscription:{...p.subscription,startDate:start,endDate:end.toISOString().split("T")[0],paid:false},usedSessions:0});
+    tt("تم تجديد الاشتراك ✓");
+  };
+
+  // ── Fees ──
+  const addFeeToPlayer=(pid)=>{
+    if(!newFee.desc||!newFee.amount){tt("أكمل بيانات الرسم","danger");return}
+    const p=players.find(x=>x.id===pid);
+    updatePlayer(pid,{fees:[...p.fees,{...newFee,id:Date.now(),amount:Number(newFee.amount)}]});
+    setNewFee({desc:"",amount:"",paid:false,date:today()});setShowAddFee(null);
+    tt("تمت إضافة الرسم ✓");
+  };
+
+  // ── Attendance ──
+  const toggleAtt=(pid,date,status)=>{
+    const p=players.find(x=>x.id===pid);
+    const att=[...p.attendance];const idx=att.findIndex(a=>a.date===date);
+    if(idx>=0)att[idx]={date,status};else att.push({date,status});
+    // auto-increment usedSessions on marking present
+    let extra={};
+    if(status==="حاضر"||status==="متأخر"){
+      const prev=p.attendance.find(a=>a.date===date);
+      if(!prev||prev.status==="غائب"||prev.status==="إجازة"){extra.usedSessions=Math.min(p.usedSessions+1,p.totalSessions)}
+    }
+    updatePlayer(pid,{attendance:att,...extra});
+  };
+  const getAtt=(pid,date)=>{const p=players.find(x=>x.id===pid);return p?.attendance?.find(x=>x.date===date)?.status||""};
+  const attC={"حاضر":P.success,"غائب":P.danger,"متأخر":P.warn,"إجازة":P.muted};
+
+  const getWeek=(cd)=>{const d=new Date(cd);const day=d.getDay();const s=new Date(d);s.setDate(d.getDate()-day);return Array.from({length:7},(_,i)=>{const dd=new Date(s);dd.setDate(s.getDate()+i);return dd.toISOString().split("T")[0]})};
+  const weekDates=useMemo(()=>getWeek(attDate),[attDate]);
+  const dayN=["أحد","إثنين","ثلاثاء","أربعاء","خميس","جمعة","سبت"];
+
+  const pAttStats=useCallback(p=>{
+    const t=p.attendance.length;if(!t)return{rate:0,present:0,absent:0,late:0};
+    const pr=p.attendance.filter(a=>a.status==="حاضر").length;
+    const lt=p.attendance.filter(a=>a.status==="متأخر").length;
+    const ab=p.attendance.filter(a=>a.status==="غائب").length;
+    return{rate:Math.round(((pr+lt)/t)*100),present:pr,absent:ab,late:lt};
+  },[]);
+
+  // ── WhatsApp Templates ──
+  const waStart=(p)=>`السلام عليكم ${p.name}،\nأهلاً بك في ${settings.facilityName} 🏊\n\nتفاصيل اشتراكك:\n📅 تاريخ البدء: ${p.subscription.startDate}\n🔢 عدد التمارين: ${p.totalSessions}\n🕐 الكلاس: ${getClassName(p.classId)} - ${p.sessionHour}\n💰 المبلغ: ${p.subscription.amount} ر.س\n\nنتمنى لك تجربة ممتعة!`;
+  const waEnd=(p)=>{const d=daysLeft(p.subscription.endDate);return`السلام عليكم ${p.name}،\nنود إبلاغك بأن اشتراكك في ${settings.facilityName} ${d<0?"قد انتهى":"ينتهي قريباً"} 🏊\n\n📅 تاريخ الانتهاء: ${p.subscription.endDate}\n${d<0?`⚠️ منتهي منذ ${Math.abs(d)} يوم`:`⏳ متبقي ${d} يوم`}\n\nيرجى التواصل معنا لتجديد الاشتراك.\nشكراً لك!`};
+  const waSessions=(p)=>{const rem=p.totalSessions-p.usedSessions;return`السلام عليكم ${p.name}،\nتحديث تمارينك في ${settings.facilityName} 🏊\n\n✅ التمارين المستخدمة: ${p.usedSessions}/${p.totalSessions}\n${rem<=2?"⚠️":"📊"} المتبقي: ${rem} تمرين\n${rem<=0?"\n❗ لقد استنفذت جميع تمارينك. يرجى تجديد الاشتراك.":rem<=2?"\n⚠️ تمارينك على وشك الانتهاء!":""}\n\nشكراً لك!`};
+
+  // ═══════════════════ TABS RENDER ═══════════════════
+
+  // ── Dashboard ──
+  const renderDash=()=>(
+    <div style={{display:"flex",flexDirection:"column",gap:22}}>
+      <div style={{display:"flex",flexWrap:"wrap",gap:14}}>
+        <StatCard icon={IC.users} label="اللاعبون النشطون" value={activePlayers.length} sub={`من أصل ${players.length}`}/>
+        <StatCard icon={IC.dollar} label="الإيرادات المحصلة" value={`${stats.totalRev.toLocaleString()}`} sub="ر.س" color={P.success}/>
+        <StatCard icon={IC.bell} label="مستحقات معلقة" value={`${stats.pendRev.toLocaleString()}`} sub="ر.س" color={P.warn}/>
+        <StatCard icon={IC.cal} label="تنتهي خلال أسبوع" value={stats.expSoon.length} sub={stats.expired.length?`${stats.expired.length} منتهية`:""} color={P.danger}/>
+      </div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:14}}>
+        <div style={{background:P.card,borderRadius:16,padding:20,border:`1px solid ${P.border}`,flex:"1 1 280px"}}>
+          <h4 style={{color:P.text,margin:"0 0 14px",fontSize:15,fontWeight:700}}>توزيع الكلاسات</h4>
+          {stats.classDist.map((g,i)=>(
+            <div key={g.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+              <span style={{fontSize:12,color:P.dim,minWidth:80}}>{g.name}</span>
+              <div style={{flex:1,height:26,background:P.surface,borderRadius:7,overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${activePlayers.length?(g.count/activePlayers.length)*100:0}%`,background:[P.accent,P.success,P.warn,P.danger][i%4],borderRadius:7,transition:"width .4s",display:"flex",alignItems:"center",justifyContent:"flex-end",paddingRight:6}}>
+                  <span style={{fontSize:11,color:"#fff",fontWeight:700}}>{g.count}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{background:P.card,borderRadius:16,padding:20,border:`1px solid ${P.border}`,flex:"1 1 280px"}}>
+          <h4 style={{color:P.text,margin:"0 0 14px",fontSize:15,fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
+            <Icon d={IC.bell} color={P.warn} size={16}/> تنبيهات
+          </h4>
+          {stats.lowSessions.length>0&&stats.lowSessions.map(p=>(
+            <div key={"s"+p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${P.border}`}}>
+              <span style={{color:P.text,fontSize:13}}>{p.name}</span>
+              <Badge color={P.warn}>تمارين: {p.totalSessions-p.usedSessions} متبقي</Badge>
+            </div>
+          ))}
+          {[...stats.expired,...stats.expSoon].map(p=>{
+            const d=daysLeft(p.subscription.endDate);
+            return(
+              <div key={"e"+p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${P.border}`}}>
+                <span style={{color:P.text,fontSize:13}}>{p.name}</span>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <Badge color={d<0?P.danger:P.warn}>{d<0?`منتهي ${Math.abs(d)}ي`:`${d} يوم`}</Badge>
+                  <a href={waLink(p.phone,waEnd(p))} target="_blank" rel="noreferrer"><Icon d={IC.wa} color="#25d366" size={16}/></a>
+                </div>
+              </div>
+            );
+          })}
+          {stats.lowSessions.length===0&&stats.expired.length===0&&stats.expSoon.length===0&&(
+            <p style={{color:P.muted,fontSize:13,textAlign:"center",padding:16}}>لا توجد تنبيهات</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── Players ──
+  const renderPlayers=()=>(
+    <div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:10,marginBottom:18,alignItems:"center"}}>
+        <div style={{position:"relative",flex:"1 1 180px"}}>
+          <Icon d={IC.search} size={15} color={P.muted} style={{position:"absolute",right:10,top:10}}/>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="بحث..." style={{width:"100%",padding:"8px 34px 8px 10px",borderRadius:10,border:`1px solid ${P.border}`,background:P.surface,color:P.text,fontSize:13,fontFamily:"inherit",outline:"none",boxSizing:"border-box"}}/>
+        </div>
+        <select value={filterClass} onChange={e=>setFilterClass(e.target.value)} style={{padding:"8px 10px",borderRadius:10,border:`1px solid ${P.border}`,background:P.surface,color:P.text,fontSize:12,fontFamily:"inherit"}}>
+          <option value="الكل">كل الكلاسات</option>
+          {settings.classes.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select value={filterLevel} onChange={e=>setFilterLevel(e.target.value)} style={{padding:"8px 10px",borderRadius:10,border:`1px solid ${P.border}`,background:P.surface,color:P.text,fontSize:12,fontFamily:"inherit"}}>
+          <option value="الكل">كل المستويات</option>
+          {settings.levels.map(l=><option key={l}>{l}</option>)}
+        </select>
+        <Btn onClick={()=>{setNp({...emptyPlayer});setShowAddPlayer(true)}} small><Icon d={IC.plus} size={14} color="#fff"/> إضافة لاعب</Btn>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(270px,1fr))",gap:12}}>
+        {filtered.map(p=>{
+          const d=daysLeft(p.subscription.endDate);
+          const rem=p.totalSessions-p.usedSessions;
+          const att=pAttStats(p);
+          return(
+            <div key={p.id} style={{background:P.card,borderRadius:14,padding:16,border:`1px solid ${P.border}`,cursor:"pointer",transition:"all .15s",opacity:p.active?1:.5}} onClick={()=>setSelPlayer(p.id)}>
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+                <div style={{width:44,height:44,borderRadius:12,background:`linear-gradient(135deg,${P.accent}33,${P.accent}11)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:800,color:P.accent,flexShrink:0,overflow:"hidden"}}>
+                  {p.photo?<img src={p.photo} style={{width:44,height:44,objectFit:"cover"}}/>:p.name.charAt(0)}
+                </div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{color:P.text,fontWeight:700,fontSize:14,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.name}</div>
+                  <div style={{display:"flex",gap:5,marginTop:3,flexWrap:"wrap"}}>
+                    <Badge color={P.accent}>{getClassName(p.classId)}</Badge>
+                    <Badge color={P.dim}>{p.level}</Badge>
+                  </div>
+                </div>
+                <button onClick={e=>{e.stopPropagation();openEdit(p)}} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:8,padding:6,cursor:"pointer",display:"flex"}} title="تعديل">
+                  <Icon d={IC.edit} size={14} color={P.accent}/>
+                </button>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:P.muted,paddingTop:8,borderTop:`1px solid ${P.border}`}}>
+                <span>اشتراك: <span style={{color:d<0?P.danger:d<=7?P.warn:P.success,fontWeight:600}}>{d<0?"منتهي":`${d}ي`}</span></span>
+                <span>تمارين: <span style={{color:rem<=2?P.danger:P.success,fontWeight:600}}>{rem}/{p.totalSessions}</span></span>
+                <span>حضور: <span style={{color:att.rate>=80?P.success:att.rate>=50?P.warn:P.danger,fontWeight:600}}>{att.rate}%</span></span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Player Detail Modal ── */}
+      <Modal open={!!selPlayer} onClose={()=>setSelPlayer(null)} title="بيانات اللاعب" wide>
+        {(()=>{
+          const p=players.find(x=>x.id===selPlayer);if(!p)return null;
+          const d=daysLeft(p.subscription.endDate);const att=pAttStats(p);const rem=p.totalSessions-p.usedSessions;
+          return(
+            <div style={{display:"flex",flexDirection:"column",gap:18}}>
+              <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"flex-start"}}>
+                <div style={{width:72,height:72,borderRadius:18,background:`linear-gradient(135deg,${P.accent}44,${P.accent}11)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:28,fontWeight:800,color:P.accent,overflow:"hidden",flexShrink:0}}>
+                  {p.photo?<img src={p.photo} style={{width:72,height:72,objectFit:"cover"}}/>:p.name.charAt(0)}
+                </div>
+                <div style={{flex:1}}>
+                  <h3 style={{color:P.text,fontSize:20,fontWeight:800,margin:"0 0 6px"}}>{p.name}</h3>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
+                    <Badge color={P.accent}>{getClassName(p.classId)}</Badge>
+                    <Badge color={P.dim}>{p.level}</Badge>
+                    <Badge color={p.active?P.success:P.danger}>{p.active?"نشط":"معطل"}</Badge>
+                  </div>
+                  <div style={{display:"flex",gap:14,fontSize:12,color:P.dim,flexWrap:"wrap"}}>
+                    <span>العمر: {p.age}</span>
+                    <span>🕐 {p.sessionHour||"—"}</span>
+                    <span><Icon d={IC.phone} size={12} color={P.dim}/> {p.phone}</span>
+                  </div>
+                </div>
+                <Btn small onClick={()=>{openEdit(p);setSelPlayer(null)}}><Icon d={IC.edit} size={14} color="#fff"/> تعديل</Btn>
+              </div>
+
+              {/* Sessions Progress */}
+              <div style={{background:P.surface,borderRadius:14,padding:16,border:`1px solid ${P.border}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <h4 style={{color:P.text,margin:0,fontSize:14,fontWeight:700}}>التمارين</h4>
+                  <span style={{fontSize:12,color:rem<=2?P.danger:P.success,fontWeight:700}}>{rem} متبقي من {p.totalSessions}</span>
+                </div>
+                <div style={{height:10,background:P.card,borderRadius:6,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${(p.usedSessions/p.totalSessions)*100}%`,background:rem<=2?`linear-gradient(90deg,${P.warn},${P.danger})`:`linear-gradient(90deg,${P.accent},${P.success})`,borderRadius:6,transition:"width .4s"}}/>
+                </div>
+              </div>
+
+              {/* Subscription */}
+              <div style={{background:P.surface,borderRadius:14,padding:16,border:`1px solid ${P.border}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <h4 style={{color:P.text,margin:0,fontSize:14,fontWeight:700}}>الاشتراك</h4>
+                  <Badge color={d<0?P.danger:d<=7?P.warn:P.success}>{d<0?`منتهي ${Math.abs(d)}ي`:`${d} يوم`}</Badge>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,fontSize:12,color:P.dim}}>
+                  <span>النوع: <strong style={{color:P.text}}>{p.subscription.type}</strong></span>
+                  <span>المبلغ: <strong style={{color:P.text}}>{p.subscription.amount} ر.س</strong></span>
+                  <span>البداية: {p.subscription.startDate}</span>
+                  <span>النهاية: {p.subscription.endDate}</span>
+                </div>
+                <div style={{display:"flex",gap:6,marginTop:12,flexWrap:"wrap"}}>
+                  <Btn small color={P.success} onClick={()=>updatePlayer(p.id,{subscription:{...p.subscription,paid:!p.subscription.paid}})}>{p.subscription.paid?"✓ مدفوع":"تأكيد الدفع"}</Btn>
+                  <Btn small color={P.accent} onClick={()=>renewSub(p.id)}><Icon d={IC.refresh} size={13} color="#fff"/> تجديد</Btn>
+                </div>
+              </div>
+
+              {/* WhatsApp Messages */}
+              <div style={{background:P.surface,borderRadius:14,padding:16,border:`1px solid ${P.border}`}}>
+                <h4 style={{color:P.text,margin:"0 0 10px",fontSize:14,fontWeight:700,display:"flex",alignItems:"center",gap:6}}>
+                  <Icon d={IC.wa} color="#25d366" size={16}/> رسائل واتساب
+                </h4>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                  <WaBtn phone={p.phone} msg={waStart(p)} label="بداية الاشتراك"/>
+                  <WaBtn phone={p.phone} msg={waEnd(p)} label="انتهاء الاشتراك"/>
+                  <WaBtn phone={p.phone} msg={waSessions(p)} label="تحديث التمارين"/>
+                </div>
+              </div>
+
+              {/* Attendance */}
+              <div style={{background:P.surface,borderRadius:14,padding:16,border:`1px solid ${P.border}`}}>
+                <h4 style={{color:P.text,margin:"0 0 10px",fontSize:14,fontWeight:700}}>الحضور</h4>
+                <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+                  <div style={{textAlign:"center"}}><div style={{fontSize:26,fontWeight:800,color:att.rate>=80?P.success:att.rate>=50?P.warn:P.danger}}>{att.rate}%</div><div style={{fontSize:10,color:P.muted}}>نسبة الحضور</div></div>
+                  {[{l:"حاضر",v:att.present,c:P.success},{l:"غائب",v:att.absent,c:P.danger},{l:"متأخر",v:att.late,c:P.warn}].map(x=>(
+                    <div key={x.l} style={{textAlign:"center",padding:"6px 12px",background:x.c+"0d",borderRadius:8,border:`1px solid ${x.c}22`}}>
+                      <div style={{fontSize:18,fontWeight:700,color:x.c}}>{x.v}</div>
+                      <div style={{fontSize:10,color:P.muted}}>{x.l}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Fees */}
+              <div style={{background:P.surface,borderRadius:14,padding:16,border:`1px solid ${P.border}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <h4 style={{color:P.text,margin:0,fontSize:14,fontWeight:700}}>الرسوم</h4>
+                  <Btn small onClick={()=>setShowAddFee(p.id)}>+ إضافة</Btn>
+                </div>
+                {p.fees.length===0?<p style={{color:P.muted,fontSize:12,textAlign:"center"}}>لا توجد</p>:p.fees.map((f,i)=>(
+                  <div key={f.id||i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",borderBottom:i<p.fees.length-1?`1px solid ${P.border}`:"none"}}>
+                    <span style={{color:P.text,fontSize:13}}>{f.desc} <span style={{color:P.muted,fontSize:11}}>— {f.date}</span></span>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{color:P.text,fontWeight:600,fontSize:13}}>{f.amount} ر.س</span>
+                      <button onClick={()=>{const fees=[...p.fees];fees[i]={...fees[i],paid:!fees[i].paid};updatePlayer(p.id,{fees})}} style={{background:f.paid?P.success+"1a":P.danger+"1a",border:"none",borderRadius:6,padding:"3px 8px",color:f.paid?P.success:P.danger,fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>{f.paid?"مدفوع":"معلق"}</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Notes */}
+              <div style={{background:P.surface,borderRadius:14,padding:16,border:`1px solid ${P.border}`}}>
+                <h4 style={{color:P.text,margin:"0 0 6px",fontSize:14,fontWeight:700}}>ملاحظات</h4>
+                <textarea value={p.notes} onChange={e=>updatePlayer(p.id,{notes:e.target.value})} placeholder="ملاحظات..." style={{width:"100%",padding:8,borderRadius:8,border:`1px solid ${P.border}`,background:P.card,color:P.text,fontSize:12,fontFamily:"inherit",resize:"vertical",minHeight:50,outline:"none",boxSizing:"border-box"}}/>
+              </div>
+
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <Btn small color={p.active?P.warn:P.success} onClick={()=>updatePlayer(p.id,{active:!p.active})}>{p.active?"تعطيل":"تفعيل"}</Btn>
+                <Btn small color={P.danger} variant="outlined" onClick={()=>{if(confirm("حذف هذا اللاعب نهائياً؟"))deletePlayer(p.id)}}><Icon d={IC.trash} size={13} color={P.danger}/> حذف</Btn>
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
+
+      {/* Add Player Modal */}
+      <Modal open={showAddPlayer} onClose={()=>setShowAddPlayer(false)} title="إضافة لاعب جديد">
+        <PlayerForm player={np} setPlayer={setNp} onSave={doAddPlayer} isEdit={false} settings={settings} getClassHours={getClassHours}/>
+      </Modal>
+
+      {/* Edit Player Modal */}
+      <Modal open={!!editPlayer} onClose={()=>{setEditPlayer(null);setEp(null)}} title="تعديل بيانات اللاعب">
+        {ep&&<PlayerForm player={ep} setPlayer={setEp} onSave={doEditPlayer} isEdit={true} settings={settings} getClassHours={getClassHours}/>}
+      </Modal>
+
+      {/* Add Fee Modal */}
+      <Modal open={!!showAddFee} onClose={()=>setShowAddFee(null)} title="إضافة رسم">
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <Inp label="الوصف" value={newFee.desc} onChange={v=>setNewFee(f=>({...f,desc:v}))} placeholder="مثال: ملابس سباحة"/>
+          <Inp label="المبلغ" type="number" value={newFee.amount} onChange={v=>setNewFee(f=>({...f,amount:v}))}/>
+          <Inp label="التاريخ" type="date" value={newFee.date} onChange={v=>setNewFee(f=>({...f,date:v}))}/>
+          <label style={{display:"flex",alignItems:"center",gap:8,color:P.dim,fontSize:12,cursor:"pointer"}}><input type="checkbox" checked={newFee.paid} onChange={()=>setNewFee(f=>({...f,paid:!f.paid}))}/> مدفوع</label>
+          <Btn onClick={()=>addFeeToPlayer(showAddFee)}>حفظ</Btn>
+        </div>
+      </Modal>
+    </div>
+  );
+
+  // ── Attendance Tab ──
+  const renderAtt=()=>(
+    <div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:10,marginBottom:18,alignItems:"center"}}>
+        <Inp label="التاريخ" type="date" value={attDate} onChange={setAttDate}/>
+        <div style={{display:"flex",gap:10,alignItems:"flex-end"}}>
+          {ATT_STATUS.map(st=>(
+            <div key={st} style={{display:"flex",alignItems:"center",gap:3,fontSize:11,color:attC[st]}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:attC[st]}}/> {st}
+            </div>
+          ))}
+        </div>
+      </div>
+      <div style={{background:P.card,borderRadius:14,border:`1px solid ${P.border}`,overflow:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",minWidth:620}}>
+          <thead>
+            <tr style={{background:P.surface}}>
+              <th style={{padding:"10px 14px",textAlign:"right",color:P.dim,fontSize:12,fontWeight:600,borderBottom:`1px solid ${P.border}`,position:"sticky",right:0,background:P.surface,zIndex:1}}>اللاعب</th>
+              {weekDates.map((dd,i)=>(
+                <th key={dd} style={{padding:"10px 6px",textAlign:"center",color:dd===today()?P.accent:P.dim,fontSize:11,fontWeight:600,borderBottom:`1px solid ${P.border}`,background:dd===today()?P.accent+"08":"transparent",whiteSpace:"nowrap"}}>
+                  <div>{dayN[i]}</div><div style={{fontSize:10,color:P.muted,marginTop:2}}>{dd.slice(5)}</div>
+                </th>
+              ))}
+              <th style={{padding:"10px 6px",textAlign:"center",color:P.dim,fontSize:11,fontWeight:600,borderBottom:`1px solid ${P.border}`}}>%</th>
+            </tr>
+          </thead>
+          <tbody>
+            {activePlayers.map(p=>{
+              const wAtt=weekDates.map(dd=>getAtt(p.id,dd));
+              const wPr=wAtt.filter(s=>s==="حاضر"||s==="متأخر").length;
+              const wT=wAtt.filter(s=>s).length;
+              return(
+                <tr key={p.id} style={{borderBottom:`1px solid ${P.border}`}}>
+                  <td style={{padding:"8px 14px",fontSize:13,color:P.text,fontWeight:600,position:"sticky",right:0,background:P.card,zIndex:1}}>
+                    <div>{p.name}</div><div style={{fontSize:10,color:P.muted}}>{getClassName(p.classId)}</div>
+                  </td>
+                  {weekDates.map(dd=>{
+                    const st=getAtt(p.id,dd);
+                    return(
+                      <td key={dd} style={{padding:4,textAlign:"center",background:dd===today()?P.accent+"05":"transparent"}}>
+                        <select value={st} onChange={e=>toggleAtt(p.id,dd,e.target.value)} style={{padding:"3px 1px",borderRadius:5,border:`1px solid ${st?attC[st]+"44":P.border}`,background:st?attC[st]+"12":P.surface,color:st?attC[st]:P.muted,fontSize:10,fontFamily:"inherit",width:"100%",cursor:"pointer",outline:"none",textAlign:"center"}}>
+                          <option value="">—</option>
+                          {ATT_STATUS.map(s=><option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </td>
+                    );
+                  })}
+                  <td style={{padding:"4px 6px",textAlign:"center"}}>
+                    <span style={{fontSize:12,fontWeight:700,color:wT?(wPr/wT>=.8?P.success:wPr/wT>=.5?P.warn:P.danger):P.muted}}>{wT?Math.round((wPr/wT)*100):0}%</span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  // ── Subscriptions Tab ──
+  const renderSubs=()=>(
+    <div style={{background:P.card,borderRadius:14,border:`1px solid ${P.border}`,overflow:"auto"}}>
+      <table style={{width:"100%",borderCollapse:"collapse",minWidth:700}}>
+        <thead><tr style={{background:P.surface}}>
+          {["اللاعب","النوع","البداية","النهاية","المبلغ","الحالة","المتبقي","تمارين","إجراءات"].map(h=>(
+            <th key={h} style={{padding:"12px 10px",textAlign:"right",color:P.dim,fontSize:12,fontWeight:600,borderBottom:`1px solid ${P.border}`,whiteSpace:"nowrap"}}>{h}</th>
+          ))}
+        </tr></thead>
+        <tbody>
+          {players.sort((a,b)=>daysLeft(a.subscription.endDate)-daysLeft(b.subscription.endDate)).map(p=>{
+            const d=daysLeft(p.subscription.endDate);const rem=p.totalSessions-p.usedSessions;
+            return(
+              <tr key={p.id} style={{borderBottom:`1px solid ${P.border}`,opacity:p.active?1:.5}}>
+                <td style={{padding:10,fontSize:13,fontWeight:600,color:P.text}}>{p.name}</td>
+                <td style={{padding:10,fontSize:12,color:P.dim}}>{p.subscription.type}</td>
+                <td style={{padding:10,fontSize:12,color:P.dim}}>{p.subscription.startDate}</td>
+                <td style={{padding:10,fontSize:12,color:P.dim}}>{p.subscription.endDate}</td>
+                <td style={{padding:10,fontSize:13,fontWeight:600,color:P.text}}>{p.subscription.amount}</td>
+                <td style={{padding:10}}><Badge color={p.subscription.paid?P.success:P.danger}>{p.subscription.paid?"مدفوع":"معلق"}</Badge></td>
+                <td style={{padding:10}}><Badge color={d<0?P.danger:d<=7?P.warn:P.success}>{d<0?`منتهي(${Math.abs(d)})`:`${d}ي`}</Badge></td>
+                <td style={{padding:10}}><Badge color={rem<=2?P.danger:P.success}>{rem}/{p.totalSessions}</Badge></td>
+                <td style={{padding:10}}>
+                  <div style={{display:"flex",gap:5}}>
+                    <Btn small color={P.accent} onClick={()=>renewSub(p.id)}>تجديد</Btn>
+                    <a href={waLink(p.phone,waEnd(p))} target="_blank" rel="noreferrer"><Icon d={IC.wa} color="#25d366" size={16}/></a>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  // ── Fees Tab ──
+  const renderFees=()=>(
+    <div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:14,marginBottom:18}}>
+        <StatCard icon={IC.dollar} label="مدفوع" value={`${players.flatMap(p=>p.fees).filter(f=>f.paid).reduce((s,f)=>s+f.amount,0)} ر.س`} color={P.success}/>
+        <StatCard icon={IC.bell} label="معلق" value={`${players.flatMap(p=>p.fees).filter(f=>!f.paid).reduce((s,f)=>s+f.amount,0)} ر.س`} color={P.danger}/>
+      </div>
+      <div style={{background:P.card,borderRadius:14,border:`1px solid ${P.border}`,overflow:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead><tr style={{background:P.surface}}>
+            {["اللاعب","الوصف","المبلغ","التاريخ","الحالة","إجراء"].map(h=>(
+              <th key={h} style={{padding:"12px 10px",textAlign:"right",color:P.dim,fontSize:12,fontWeight:600,borderBottom:`1px solid ${P.border}`}}>{h}</th>
+            ))}
+          </tr></thead>
+          <tbody>
+            {players.flatMap(p=>p.fees.map((f,i)=>({...f,pName:p.name,pId:p.id,fi:i,ph:p.phone}))).map((f,idx)=>(
+              <tr key={idx} style={{borderBottom:`1px solid ${P.border}`}}>
+                <td style={{padding:10,fontSize:13,fontWeight:600,color:P.text}}>{f.pName}</td>
+                <td style={{padding:10,fontSize:12,color:P.dim}}>{f.desc}</td>
+                <td style={{padding:10,fontSize:13,fontWeight:600,color:P.text}}>{f.amount} ر.س</td>
+                <td style={{padding:10,fontSize:12,color:P.dim}}>{f.date}</td>
+                <td style={{padding:10}}><Badge color={f.paid?P.success:P.danger}>{f.paid?"مدفوع":"معلق"}</Badge></td>
+                <td style={{padding:10}}>
+                  <button onClick={()=>{const p=players.find(x=>x.id===f.pId);const fees=[...p.fees];fees[f.fi]={...fees[f.fi],paid:!fees[f.fi].paid};updatePlayer(f.pId,{fees})}} style={{background:"none",border:`1px solid ${f.paid?P.success:P.warn}`,borderRadius:6,padding:"3px 8px",color:f.paid?P.success:P.warn,fontSize:10,cursor:"pointer",fontFamily:"inherit"}}>{f.paid?"إلغاء":"تأكيد"}</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  // ── Reports Tab ──
+  const renderReports=()=>{
+    const tSub=players.reduce((s,p)=>s+(p.subscription.paid?p.subscription.amount:0),0);
+    const tFee=players.flatMap(p=>p.fees).filter(f=>f.paid).reduce((s,f)=>s+f.amount,0);
+    const pSub=players.reduce((s,p)=>s+(!p.subscription.paid?p.subscription.amount:0),0);
+    const pFee=players.flatMap(p=>p.fees).filter(f=>!f.paid).reduce((s,f)=>s+f.amount,0);
+    const tc=tSub+tFee;const tp=pSub+pFee;
+    const avgA=activePlayers.length?Math.round(activePlayers.reduce((s,p)=>s+pAttStats(p).rate,0)/activePlayers.length):0;
+    const best=activePlayers.length?activePlayers.reduce((b,p)=>pAttStats(p).rate>pAttStats(b).rate?p:b,activePlayers[0]):null;
+    return(
+      <div style={{display:"flex",flexDirection:"column",gap:18}}>
+        <div style={{display:"flex",flexWrap:"wrap",gap:14}}>
+          <StatCard icon={IC.dollar} label="إجمالي المحصل" value={`${tc.toLocaleString()}`} sub="ر.س" color={P.success}/>
+          <StatCard icon={IC.bell} label="إجمالي المعلق" value={`${tp.toLocaleString()}`} sub="ر.س" color={P.danger}/>
+          <StatCard icon={IC.card} label="اشتراكات" value={`${tSub.toLocaleString()}`} sub="ر.س" color={P.accent}/>
+          <StatCard icon={IC.dollar} label="رسوم" value={`${tFee.toLocaleString()}`} sub="ر.س" color={P.warn}/>
+        </div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:14}}>
+          <div style={{background:P.card,borderRadius:16,padding:20,border:`1px solid ${P.border}`,flex:"1 1 320px"}}>
+            <h4 style={{color:P.text,margin:"0 0 14px",fontSize:15,fontWeight:700}}>إيراد كل لاعب</h4>
+            {players.map(p=>{
+              const r=(p.subscription.paid?p.subscription.amount:0)+p.fees.filter(f=>f.paid).reduce((s,f)=>s+f.amount,0);
+              const pd=(!p.subscription.paid?p.subscription.amount:0)+p.fees.filter(f=>!f.paid).reduce((s,f)=>s+f.amount,0);
+              return(
+                <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
+                  <span style={{fontSize:12,color:P.text,minWidth:80}}>{p.name}</span>
+                  <div style={{flex:1,height:20,background:P.surface,borderRadius:5,overflow:"hidden",display:"flex"}}>
+                    {r>0&&<div style={{width:`${(r/(r+pd||1))*100}%`,background:P.success,height:"100%"}}/>}
+                    {pd>0&&<div style={{width:`${(pd/(r+pd||1))*100}%`,background:P.danger+"55",height:"100%"}}/>}
+                  </div>
+                  <span style={{fontSize:11,color:P.success,fontWeight:600,minWidth:40}}>{r}</span>
+                  {pd>0&&<span style={{fontSize:11,color:P.danger}}>({pd})</span>}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{background:P.card,borderRadius:16,padding:20,border:`1px solid ${P.border}`,flex:"1 1 260px"}}>
+            <h4 style={{color:P.text,margin:"0 0 14px",fontSize:15,fontWeight:700}}>الحضور</h4>
+            <div style={{textAlign:"center",marginBottom:16}}>
+              <div style={{fontSize:44,fontWeight:800,color:avgA>=80?P.success:avgA>=50?P.warn:P.danger}}>{avgA}%</div>
+              <div style={{fontSize:12,color:P.muted}}>متوسط الحضور</div>
+            </div>
+            {best&&<div style={{background:P.success+"0d",borderRadius:10,padding:10,marginBottom:14,textAlign:"center",border:`1px solid ${P.success}22`}}>
+              <div style={{fontSize:11,color:P.success}}>⭐ الأكثر التزاماً</div>
+              <div style={{fontSize:14,fontWeight:700,color:P.text,marginTop:3}}>{best.name} — {pAttStats(best).rate}%</div>
+            </div>}
+            {activePlayers.sort((a,b)=>pAttStats(b).rate-pAttStats(a).rate).map(p=>{
+              const st=pAttStats(p);
+              return(
+                <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                  <span style={{fontSize:12,color:P.text,minWidth:70}}>{p.name}</span>
+                  <div style={{flex:1,height:16,background:P.surface,borderRadius:5,overflow:"hidden"}}>
+                    <div style={{width:`${st.rate}%`,height:"100%",background:st.rate>=80?P.success:st.rate>=50?P.warn:P.danger,borderRadius:5}}/>
+                  </div>
+                  <span style={{fontSize:11,fontWeight:700,color:st.rate>=80?P.success:st.rate>=50?P.warn:P.danger}}>{st.rate}%</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ── Settings Tab ──
+  const [newClassName,setNewClassName]=useState("");
+  const [newClassHours,setNewClassHours]=useState("");
+  const [editCls,setEditCls]=useState(null);
+  const [editClsName,setEditClsName]=useState("");
+  const [editClsHours,setEditClsHours]=useState("");
+
+  const renderSettings=()=>(
+    <div style={{display:"flex",flexDirection:"column",gap:20,maxWidth:700}}>
+      {/* Facility Name */}
+      <div style={{background:P.card,borderRadius:16,padding:20,border:`1px solid ${P.border}`}}>
+        <h4 style={{color:P.text,margin:"0 0 14px",fontSize:16,fontWeight:700,display:"flex",alignItems:"center",gap:8}}>
+          <Icon d={IC.swim} color={P.accent} size={20}/> إعدادات المنشأة
+        </h4>
+        <Inp label="اسم المنشأة" value={settings.facilityName} onChange={v=>updateSettings({facilityName:v})} placeholder="اسم الأكاديمية"/>
+      </div>
+
+      {/* Classes Management */}
+      <div style={{background:P.card,borderRadius:16,padding:20,border:`1px solid ${P.border}`}}>
+        <h4 style={{color:P.text,margin:"0 0 14px",fontSize:16,fontWeight:700,display:"flex",alignItems:"center",gap:8}}>
+          <Icon d={IC.clock} color={P.accent} size={20}/> إدارة الكلاسات
+        </h4>
+        {settings.classes.map(c=>(
+          <div key={c.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:`1px solid ${P.border}`,flexWrap:"wrap"}}>
+            <div style={{flex:1,minWidth:120}}>
+              <div style={{color:P.text,fontSize:14,fontWeight:600}}>{c.name}</div>
+              <div style={{color:P.dim,fontSize:11,marginTop:2}}>{c.hours.join(" • ")}</div>
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={()=>{setEditCls(c.id);setEditClsName(c.name);setEditClsHours(c.hours.join(","))}} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:7,padding:5,cursor:"pointer",display:"flex"}}><Icon d={IC.edit} size={14} color={P.accent}/></button>
+              <button onClick={()=>{if(confirm("حذف هذا الكلاس؟"))updateSettings({classes:settings.classes.filter(x=>x.id!==c.id)})}} style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:7,padding:5,cursor:"pointer",display:"flex"}}><Icon d={IC.trash} size={14} color={P.danger}/></button>
+            </div>
+          </div>
+        ))}
+
+        {/* Edit Class Modal */}
+        <Modal open={!!editCls} onClose={()=>setEditCls(null)} title="تعديل الكلاس">
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <Inp label="اسم الكلاس" value={editClsName} onChange={setEditClsName}/>
+            <Inp label="الساعات (مفصولة بفاصلة)" value={editClsHours} onChange={setEditClsHours} placeholder="06:00,07:00,08:00"/>
+            <Btn onClick={()=>{
+              updateSettings({classes:settings.classes.map(c=>c.id===editCls?{...c,name:editClsName,hours:editClsHours.split(",").map(h=>h.trim()).filter(Boolean)}:c)});
+              setEditCls(null);tt("تم تحديث الكلاس ✓");
+            }}>حفظ</Btn>
+          </div>
+        </Modal>
+
+        {/* Add New Class */}
+        <div style={{marginTop:14,padding:14,background:P.surface,borderRadius:10,border:`1px solid ${P.border}`}}>
+          <div style={{fontSize:13,color:P.dim,fontWeight:600,marginBottom:8}}>إضافة كلاس جديد</div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <Inp value={newClassName} onChange={setNewClassName} placeholder="اسم الكلاس" style={{flex:"1 1 120px"}}/>
+            <Inp value={newClassHours} onChange={setNewClassHours} placeholder="الساعات: 06:00,07:00" style={{flex:"1 1 150px"}}/>
+            <Btn small onClick={()=>{
+              if(!newClassName.trim()){tt("أدخل اسم الكلاس","danger");return}
+              const hrs=newClassHours.split(",").map(h=>h.trim()).filter(Boolean);
+              updateSettings({classes:[...settings.classes,{id:Date.now(),name:newClassName,hours:hrs}]});
+              setNewClassName("");setNewClassHours("");
+              tt("تمت إضافة الكلاس ✓");
+            }}><Icon d={IC.plus} size={14} color="#fff"/> إضافة</Btn>
+          </div>
+        </div>
+      </div>
+
+      {/* Subscription Types */}
+      <div style={{background:P.card,borderRadius:16,padding:20,border:`1px solid ${P.border}`}}>
+        <h4 style={{color:P.text,margin:"0 0 14px",fontSize:16,fontWeight:700,display:"flex",alignItems:"center",gap:8}}>
+          <Icon d={IC.card} color={P.accent} size={20}/> أنواع الاشتراكات
+        </h4>
+        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+          {settings.subTypes.map(st=>(
+            <div key={st} style={{display:"flex",alignItems:"center",gap:6,background:P.surface,borderRadius:8,padding:"6px 12px",border:`1px solid ${P.border}`}}>
+              <span style={{color:P.text,fontSize:13}}>{st}</span>
+              <button onClick={()=>{if(settings.subTypes.length<=1){tt("يجب وجود نوع واحد على الأقل","danger");return}updateSettings({subTypes:settings.subTypes.filter(x=>x!==st)})}} style={{background:"none",border:"none",cursor:"pointer",display:"flex",padding:2}}><Icon d={IC.x} size={12} color={P.danger}/></button>
+            </div>
+          ))}
+        </div>
+        <div style={{marginTop:10,display:"flex",gap:8}}>
+          <input id="newSubType" placeholder="نوع جديد..." style={{padding:"7px 10px",borderRadius:8,border:`1px solid ${P.border}`,background:P.surface,color:P.text,fontSize:13,fontFamily:"inherit",outline:"none",flex:1}}/>
+          <Btn small onClick={()=>{
+            const inp=document.getElementById("newSubType");
+            if(!inp.value.trim())return;
+            if(settings.subTypes.includes(inp.value.trim())){tt("موجود مسبقاً","danger");return}
+            updateSettings({subTypes:[...settings.subTypes,inp.value.trim()]});
+            inp.value="";tt("تمت الإضافة ✓");
+          }}><Icon d={IC.plus} size={14} color="#fff"/> إضافة</Btn>
+        </div>
+      </div>
+
+      {/* Levels */}
+      <div style={{background:P.card,borderRadius:16,padding:20,border:`1px solid ${P.border}`}}>
+        <h4 style={{color:P.text,margin:"0 0 14px",fontSize:16,fontWeight:700}}>المستويات</h4>
+        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+          {settings.levels.map(lv=>(
+            <div key={lv} style={{display:"flex",alignItems:"center",gap:6,background:P.surface,borderRadius:8,padding:"6px 12px",border:`1px solid ${P.border}`}}>
+              <span style={{color:P.text,fontSize:13}}>{lv}</span>
+              <button onClick={()=>{if(settings.levels.length<=1)return;updateSettings({levels:settings.levels.filter(x=>x!==lv)})}} style={{background:"none",border:"none",cursor:"pointer",display:"flex",padding:2}}><Icon d={IC.x} size={12} color={P.danger}/></button>
+            </div>
+          ))}
+        </div>
+        <div style={{marginTop:10,display:"flex",gap:8}}>
+          <input id="newLevel" placeholder="مستوى جديد..." style={{padding:"7px 10px",borderRadius:8,border:`1px solid ${P.border}`,background:P.surface,color:P.text,fontSize:13,fontFamily:"inherit",outline:"none",flex:1}}/>
+          <Btn small onClick={()=>{
+            const inp=document.getElementById("newLevel");
+            if(!inp.value.trim())return;
+            updateSettings({levels:[...settings.levels,inp.value.trim()]});
+            inp.value="";tt("تمت الإضافة ✓");
+          }}><Icon d={IC.plus} size={14} color="#fff"/> إضافة</Btn>
+        </div>
+      </div>
+
+      {/* License Info & Logout */}
+      <div style={{background:P.card,borderRadius:16,padding:20,border:`1px solid ${P.accent}33`}}>
+        <h4 style={{color:P.text,margin:"0 0 14px",fontSize:16,fontWeight:700,display:"flex",alignItems:"center",gap:8}}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={P.accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+          الترخيص والحساب
+        </h4>
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 14px",background:P.surface,borderRadius:10,border:`1px solid ${P.border}`}}>
+            <div>
+              <div style={{fontSize:11,color:P.muted}}>البريد الإلكتروني</div>
+              <div style={{fontSize:14,color:P.text,fontWeight:600,direction:"ltr",textAlign:"right"}}>{userEmail||"—"}</div>
+            </div>
+            <Badge color={P.success}>مُفعّل</Badge>
+          </div>
+          {licenseInfo&&(
+            <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+              <div style={{flex:1,padding:"10px 14px",background:P.surface,borderRadius:10,border:`1px solid ${P.border}`}}>
+                <div style={{fontSize:11,color:P.muted}}>كود الترخيص</div>
+                <div style={{fontSize:13,color:P.dim,fontFamily:"'Courier New',monospace",direction:"ltr",textAlign:"right",marginTop:2}}>{licenseInfo.license_key||"—"}</div>
+              </div>
+              <div style={{flex:1,padding:"10px 14px",background:P.surface,borderRadius:10,border:`1px solid ${P.border}`}}>
+                <div style={{fontSize:11,color:P.muted}}>تاريخ الانتهاء</div>
+                <div style={{fontSize:13,color:licenseInfo.expiry_date&&daysLeft(licenseInfo.expiry_date)<=30?P.warn:P.success,fontWeight:600,marginTop:2}}>{licenseInfo.expiry_date||"—"} {licenseInfo.expiry_date?`(${daysLeft(licenseInfo.expiry_date)} يوم)`:""}</div>
+              </div>
+            </div>
+          )}
+          {onLogout&&<Btn small color={P.warn} variant="outlined" onClick={()=>{if(confirm("هل تريد تسجيل الخروج؟"))onLogout()}}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+            تسجيل الخروج
+          </Btn>}
+        </div>
+      </div>
+
+      {/* Reset */}
+      <div style={{background:P.card,borderRadius:16,padding:20,border:`1px solid ${P.danger}33`}}>
+        <h4 style={{color:P.danger,margin:"0 0 10px",fontSize:15,fontWeight:700}}>إعادة ضبط</h4>
+        <p style={{color:P.dim,fontSize:12,marginBottom:12}}>سيتم حذف جميع البيانات وإعادة ضبط النظام بالكامل.</p>
+        <Btn small color={P.danger} variant="outlined" onClick={()=>{if(confirm("هل أنت متأكد من إعادة الضبط؟ سيتم حذف جميع البيانات!")){localStorage.removeItem(STORE_KEY);setStore({settings:defaultSettings,players:defaultPlayers});tt("تم إعادة الضبط")}}}>إعادة ضبط المصنع</Btn>
+      </div>
+    </div>
+  );
+
+  // ═══════════════════ MAIN RENDER ═══════════════════
+  const tabIcons=[IC.home,IC.users,IC.cal,IC.card,IC.dollar,IC.chart,IC.gear];
+  const renderTab=()=>{switch(tab){case 0:return renderDash();case 1:return renderPlayers();case 2:return renderAtt();case 3:return renderSubs();case 4:return renderFees();case 5:return renderReports();case 6:return renderSettings();default:return null}};
+
+  return(
+    <div dir="rtl" style={{fontFamily:"'Segoe UI',Tahoma,sans-serif",background:P.bg,color:P.text,minHeight:"100vh"}}>
+      {toast&&<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",background:toast.type==="danger"?P.danger:P.success,color:"#fff",padding:"10px 24px",borderRadius:12,fontSize:13,fontWeight:600,zIndex:9999,boxShadow:"0 8px 30px rgba(0,0,0,.4)",animation:"slideDown .3s ease"}}>{toast.msg}</div>}
+
+      {/* Header */}
+      <div style={{background:`linear-gradient(135deg,${P.surface},${P.bg})`,borderBottom:`1px solid ${P.border}`,padding:"14px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",position:"sticky",top:0,zIndex:100,backdropFilter:"blur(12px)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{width:42,height:42,borderRadius:12,background:`linear-gradient(135deg,${P.accent},${P.accentDk})`,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:`0 4px 15px ${P.accent}33`}}>
+            <Icon d={IC.swim} color="#fff" size={22}/>
+          </div>
+          <div>
+            <h1 style={{margin:0,fontSize:18,fontWeight:800,color:P.text,lineHeight:1.2}}>{settings.facilityName}</h1>
+            <span style={{fontSize:11,color:P.muted}}>Swimming Academy Pro</span>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:12,fontSize:12,color:P.dim}}>
+          {userEmail&&<span style={{background:P.surface,border:`1px solid ${P.border}`,borderRadius:8,padding:"4px 10px",fontSize:11,color:P.dim,maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",direction:"ltr"}}>{userEmail}</span>}
+          <div style={{display:"flex",alignItems:"center",gap:5}}>
+            <span style={{width:7,height:7,borderRadius:"50%",background:P.success,display:"inline-block"}}/>
+            {today()}
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",gap:2,padding:"10px 12px",overflowX:"auto",background:P.bg,borderBottom:`1px solid ${P.border}`}}>
+        {TABS.map((t,i)=>(
+          <button key={t} onClick={()=>setTab(i)} style={{padding:"8px 14px",borderRadius:9,border:"none",background:tab===i?P.accent+"15":"transparent",color:tab===i?P.accent:P.muted,fontWeight:tab===i?700:500,fontSize:12,cursor:"pointer",fontFamily:"inherit",transition:"all .15s",display:"flex",alignItems:"center",gap:5,whiteSpace:"nowrap",borderBottom:tab===i?`2px solid ${P.accent}`:"2px solid transparent"}}>
+            <Icon d={tabIcons[i]} size={15} color={tab===i?P.accent:P.muted}/>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div style={{padding:"18px 16px 80px"}}>{renderTab()}</div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<LicenseGate><App/></LicenseGate>);
+</script>
+</body>
+</html>
